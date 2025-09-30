@@ -1,8 +1,8 @@
 <!DOCTYPE html>
 <html lang="de">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Ausbilderunterlagen</title>
   <style>
     body {
@@ -16,8 +16,6 @@
       display: flex;
       flex-direction: column;
     }
-
-    /* Container für den eingebetteten Ordner */
     .viewer-wrap {
       flex: 1;
       display: flex;
@@ -26,18 +24,16 @@
       padding: 16px;
       backdrop-filter: blur(0px);
     }
-
     .viewer {
       width: 95%;
       max-width: 1100px;
-      height: 70vh;               /* passt die Höhe an; gern ändern */
+      height: 70vh;
       background: rgba(255,255,255,0.9);
       border-radius: 10px;
       overflow: hidden;
       box-shadow: 0 4px 20px rgba(0,0,0,0.25);
       border: 1px solid rgba(0,0,0,0.1);
     }
-
     .viewer iframe {
       width: 100%;
       height: 100%;
@@ -45,8 +41,6 @@
       display: block;
       background: #fff;
     }
-
-    /* Home-Button */
     .home-btn {
       position: fixed;
       bottom: 20px;
@@ -58,15 +52,8 @@
       cursor: pointer;
       box-shadow: 0 2px 6px rgba(0,0,0,0.3);
     }
-    .home-btn img {
-      width: 32px;
-      height: 32px;
-      display: block;
-    }
-
-    @media (max-width: 600px) {
-      .viewer { height: 65vh; }
-    }
+    .home-btn img { width: 32px; height: 32px; display: block; }
+    @media (max-width: 600px) { .viewer { height: 65vh; } }
   </style>
 </head>
 <body>
@@ -74,7 +61,6 @@
   <!-- Eingebetteter Google-Drive-Ordner (LISTENANSICHT) -->
   <div class="viewer-wrap">
     <div class="viewer">
-      <!-- Ordner-ID aus deinem Link: 19Gh0Vu8CiPyWJTxPHUB1GYmwwMJsXwNY -->
       <iframe
         src="https://drive.google.com/embeddedfolderview?id=19Gh0Vu8CiPyWJTxPHUB1GYmwwMJsXwNY#list"
         referrerpolicy="no-referrer">
@@ -84,8 +70,36 @@
 
   <!-- Home Button -->
   <button class="home-btn" onclick="window.location.href='index.html'">
-    <img src="home.jpg" alt="Home">
+    <img src="home.jpg" alt="Home" />
   </button>
 
+  <!-- Firebase SDKs (compat) -->
+  <script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore-compat.js"></script>
+
+<script>
+    // ---- Firebase init (gleiche Config wie in index.html) ----
+    firebase.initializeApp({
+      apiKey: "AIzaSyCve4c8a1nzU8SJcDhF4rqRzu30JaJ2rq8",
+    authDomain: "login-wt-my.firebaseapp.com",
+    projectId: "login-wt-my",
+    storageBucket: "login-wt-my.firebasestorage.app",
+    messagingSenderId: "666746071009",
+    appId: "1:666746071009:web:78cb64549d4309bc67d4a0"
+    });
+
+    const auth = firebase.auth();
+    // Login nur für aktuelle Sitzung (Tab)
+    auth.setPersistence(firebase.auth.Auth.Persistence.SESSION);
+
+    // Auth-Guard: nur eingeloggte Nutzer dürfen diese Seite sehen
+    auth.onAuthStateChanged((user) => {
+      if (!user) {
+        // zurück zum Login
+        location.href = "index.html";
+      }
+    });
+  </script>
 </body>
 </html>

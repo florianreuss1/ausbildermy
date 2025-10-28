@@ -3,29 +3,61 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Ausbilder-Check-in</title>
+  <title>Ausbilder-Check-in – Scanner</title>
   <style>
-    body{margin:0;background:#000;color:#fff;font-family:Arial,Helvetica,sans-serif;}
-    .wrap{max-width:700px;margin:0 auto;padding:16px;}
-    .card{background:#111;border:1px solid #333;border-radius:12px;padding:16px;margin:12px 0;}
+    :root { --bg:#000; --card:#111; --border:#333; --text:#fff; --muted:#bbb; }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--text);font-family:Arial,Helvetica,sans-serif}
+    .wrap{max-width:800px;margin:0 auto;padding:16px}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;margin:12px 0}
+    h1{margin:8px 0 12px}
+    label{display:block;margin:8px 0 4px}
+    select,button{padding:10px;border:1px solid var(--border);border-radius:10px;background:#000;color:#fff;cursor:pointer}
+    button.primary{background:#fff;color:#000;border:none;font-weight:bold}
+    button[disabled]{opacity:.6;cursor:not-allowed}
     #preview{width:100%;aspect-ratio:3/4;background:#000;border-radius:12px;border:1px solid #333}
-    button{background:#fff;color:#000;border:none;border-radius:10px;padding:10px 14px;font-weight:bold;cursor:pointer}
-    .ok{color:#6ee7a8}.warn{color:#facc15}.err{color:#f87171}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .muted{color:var(--muted)}
+    .ok{color:#6ee7a8} .warn{color:#facc15} .err{color:#f87171}
+    .hint{font-size:14px;line-height:1.4}
+    .stack{display:flex;gap:8px;flex-wrap:wrap}
   </style>
 </head>
 <body>
 <div class="wrap">
   <h1>Ausbilder-Check-in</h1>
+
   <div class="card">
-    <video id="preview" muted playsinline></video>
-    <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <button id="startBtn">Kamera starten</button>
-      <button id="stopBtn">Stop</button>
-      <span id="msg"></span>
+    <div class="row">
+      <div class="stack">
+        <button id="startTest" class="primary">Kamera testen</button>
+        <button id="stopTest">Stopp</button>
+        <button id="startScan" class="primary">QR-Scan starten</button>
+        <button id="stopScan">Scan stoppen</button>
+      </div>
+      <div style="margin-left:auto">
+        <label for="cameraSelect" class="muted">Kamera</label>
+        <select id="cameraSelect"></select>
+      </div>
     </div>
+    <video id="preview" autoplay playsinline muted></video>
+    <div id="msg" class="muted" style="margin-top:8px"></div>
+    <div id="diag" class="hint" style="margin-top:8px"></div>
   </div>
+
   <div class="card">
     <button onclick="location.href='index.html'">Zurück</button>
+  </div>
+
+  <div class="card hint">
+    <strong>Tipps bei Kamera-Problemen:</strong>
+    <ul>
+      <li>Die Seite muss über <strong>HTTPS</strong> laufen (oder <code>localhost</code>).</li>
+      <li>Im Browser die Kamera-Berechtigung zulassen (Seiteneinstellungen prüfen).</li>
+      <li>iOS Safari: erst nach einem Button-Klick erlaubt; <em>playsinline</em> &amp; <em>muted</em> sind gesetzt.</li>
+      <li>Falls die Seite in einem <strong>iframe</strong> läuft, muss der Host <code>allow=&quot;camera&quot;</code> setzen.</li>
+      <li>Server-Header <code>Permissions-Policy: camera=(self)</code> (früher Feature-Policy), wenn nötig.</li>
+    </ul>
   </div>
 </div>
 
@@ -36,84 +68,201 @@
 <script src="firebase-config.js"></script>
 <script src="attendance-shared.js"></script>
 
-<!-- ZXing Scanner -->
+<!-- ZXing (Scanner) -->
 <script src="https://unpkg.com/@zxing/browser@0.1.5/umd/index.min.js"></script>
 
 <script>
 (async function(){
-  const {auth,db,parseQrPayload} = window._att;
-  await new Promise(r=>auth.onAuthStateChanged(u=>{ if(!u) location.replace('index.html'); else r(); }));
+  const {auth, db, parseQrPayload} = window._att || {};
+  // 1) Auth
+  await new Promise(r => auth.onAuthStateChanged(u => { if(!u){ location.replace('index.html'); } else r(); }));
 
-  const codeReader = new ZXingBrowser.BrowserMultiFormatReader();
-  const video = document.getElementById('preview');
+  // 2) UI Refs
+  const preview = document.getElementById('preview');
   const msg = document.getElementById('msg');
-  const startBtn = document.getElementById('startBtn');
-  const stopBtn = document.getElementById('stopBtn');
-  let running = false;
-  let lastScanText = '';
+  const diag = document.getElementById('diag');
+  const startTest = document.getElementById('startTest');
+  const stopTest = document.getElementById('stopTest');
+  const startScan = document.getElementById('startScan');
+  const stopScan = document.getElementById('stopScan');
+  const cameraSelect = document.getElementById('cameraSelect');
 
-  function setMessage(text, cls){ msg.className=cls||''; msg.textContent=text; }
+  // 3) Secure Context Hinweis
+  if (location.protocol !== 'https:' && location.hostname !== 'localhost'){
+    setMsg('Diese Seite muss über HTTPS laufen (oder localhost).', 'err');
+  }
 
-  async function start(){
+  // 4) State
+  const codeReader = new ZXingBrowser.BrowserMultiFormatReader();
+  let testStream = null;
+  let runningScan = false;
+
+  function setMsg(text, cls){ msg.className = (cls||'muted'); msg.textContent = text; }
+  function setDiag(html){ diag.innerHTML = html || ''; }
+
+  // 5) Geräte auflisten
+  async function refreshCameras(){
     try{
       const devices = await ZXingBrowser.BrowserCodeReader.listVideoInputDevices();
-      const backCam = devices.find(d=>/back|rück|environment/i.test(d.label))?.deviceId || devices[0]?.deviceId;
-      if(!backCam){ setMessage('Keine Kamera gefunden.', 'err'); return; }
-      running = true;
-      await codeReader.decodeFromVideoDevice(backCam, video, async (result, err, controls)=>{
-        if (result && running) {
-          const txt = result.getText();
-          if (txt === lastScanText) return; // entprellen
-          lastScanText = txt;
-
-          const payload = parseQrPayload(txt);
-          if(!payload){ setMessage('Ungültiger QR-Code.', 'err'); return; }
-          try{
-            await handleCheckin(payload);
-          }catch(e){
-            console.error(e);
-            setMessage(e.message || 'Check-in fehlgeschlagen', 'err');
-          }
-        }
+      cameraSelect.innerHTML = '';
+      if (!devices.length){
+        cameraSelect.innerHTML = '<option value="">Keine Kamera gefunden</option>';
+        return;
+      }
+      devices.forEach((d, idx) => {
+        const opt = document.createElement('option');
+        opt.value = d.deviceId;
+        opt.textContent = d.label || `Kamera ${idx+1}`;
+        cameraSelect.appendChild(opt);
       });
-      setMessage('Scanner aktiv – bitte QR halten…','warn');
+      // Back-Cam heuristisch wählen
+      const back = devices.find(d => /back|rear|umwelt|rück/i.test(d.label));
+      if (back) cameraSelect.value = back.deviceId;
     }catch(e){
-      console.error(e); setMessage('Kamera konnte nicht gestartet werden.', 'err');
+      console.warn('Geräteliste fehlgeschlagen', e);
     }
   }
 
-  async function stop(){
-    running = false;
-    try{ await codeReader.reset(); }catch(e){}
-    setMessage('Scanner gestoppt.');
+  // 6) Kamera TEST (nur streamen, ohne Scanner) – um Berechtigungen & HTTPS zu prüfen
+  async function startTestCamera(){
+    try{
+      await stopAll();
+      const constraints = {
+        video: {
+          facingMode: cameraSelect.value ? undefined : { ideal: 'environment' },
+          deviceId: cameraSelect.value ? { exact: cameraSelect.value } : undefined,
+          width: { ideal: 1280 }, height: { ideal: 720 }
+        },
+        audio: false
+      };
+      testStream = await navigator.mediaDevices.getUserMedia(constraints);
+      preview.srcObject = testStream;
+      setMsg('Kamera läuft (Testmodus).', 'ok');
+      setDiag('');
+    }catch(e){
+      handleGetUserMediaError(e, 'Test');
+    }
   }
 
-  startBtn.onclick = start; stopBtn.onclick = stop;
-
-  async function handleCheckin(payload){
-    const {s:sessionId, n:nonce} = payload;
-
-    const sref = db.collection('sessions').doc(sessionId);
-    const snap = await sref.get();
-    if(!snap.exists) throw new Error('Termin nicht gefunden.');
-    const s = snap.data();
-    if (!s.open) throw new Error('Check-in ist geschlossen.');
-    if (s.qrNonce !== nonce) throw new Error('QR ist veraltet.');
-
-    const u = auth.currentUser;
-    const cref = sref.collection('checkins').doc(u.uid);
-
-    await cref.set({
-      uid: u.uid,
-      email: u.email || '',
-      displayName: u.displayName || '',
-      checkedAt: firebase.firestore.FieldValue.serverTimestamp(),
-      userAgent: navigator.userAgent,
-      nonce: nonce                // wichtig: passt zur Rule mit Nonce
-    }, { merge: false });
-
-    setMessage('Erfolgreich eingecheckt!','ok');
+  async function stopTestCamera(){
+    if (testStream){
+      testStream.getTracks().forEach(t => t.stop());
+      testStream = null;
+      preview.srcObject = null;
+      setMsg('Kamera gestoppt.', 'muted');
+    }
   }
+
+  // 7) Scanner starten/stoppen
+  async function startScanner(){
+    try{
+      await stopAll();
+      runningScan = true;
+      const deviceId = cameraSelect.value || undefined;
+      await codeReader.decodeFromVideoDevice(deviceId, preview, async (result, err, controls) => {
+        if (result && runningScan){
+          const txt = result.getText();
+          await onScan(txt);
+        }
+        if (err && !(err instanceof ZXingBrowser.NotFoundException)){
+          console.warn('ZXing Error:', err);
+        }
+      });
+      setMsg('Scanner aktiv – halte den QR sichtbar ins Bild.', 'warn');
+      setDiag('');
+    }catch(e){
+      handleGetUserMediaError(e, 'Scan');
+    }
+  }
+
+  async function stopScanner(){
+    runningScan = false;
+    try{ await codeReader.reset(); }catch(_){}
+    setMsg('Scanner gestoppt.', 'muted');
+  }
+
+  async function stopAll(){
+    await stopScanner();
+    await stopTestCamera();
+  }
+
+  // 8) Scan-Handler: QR auswerten & Check-in schreiben
+  async function onScan(text){
+    try{
+      const payload = parseQrPayload(text);
+      if (!payload) { setMsg('Ungültiger QR-Code.', 'err'); return; }
+
+      const { s: sessionId, n: nonce } = payload;
+      const sref = db.collection('sessions').doc(sessionId);
+      const snap = await sref.get();
+      if (!snap.exists) { setMsg('Termin nicht gefunden.', 'err'); return; }
+      const s = snap.data();
+      if (!s.open) { setMsg('Check-in ist geschlossen.', 'err'); return; }
+      if (s.qrNonce !== nonce) { setMsg('QR ist veraltet.', 'err'); return; }
+
+      const u = auth.currentUser;
+      await sref.collection('checkins').doc(u.uid).set({
+        uid: u.uid,
+        email: u.email || '',
+        displayName: u.displayName || '',
+        checkedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        userAgent: navigator.userAgent,
+        nonce: nonce
+      }, { merge: false });
+
+      setMsg('Erfolgreich eingecheckt! 🎉', 'ok');
+    }catch(e){
+      console.error(e);
+      setMsg('Check-in fehlgeschlagen: ' + (e.message||e), 'err');
+    }
+  }
+
+  // 9) Fehleraufbereitung
+  function handleGetUserMediaError(e, context){
+    console.error('getUserMedia/'+context, e);
+    let hint = '';
+    const name = e && (e.name || e.code || e.message) || '';
+
+    if (name.includes('NotAllowedError')) {
+      hint = 'Zugriff verweigert. Erteile der Seite Kamerazugriff in den Website-Einstellungen.';
+    } else if (name.includes('NotFoundError') || name.includes('OverconstrainedError')) {
+      hint = 'Keine passende Kamera gefunden. Wähle eine andere Kamera in der Liste.';
+    } else if (name.includes('NotReadableError')) {
+      hint = 'Kamera wird von einer anderen App blockiert.';
+    } else if (name.includes('NotSupportedError') || name.includes('SecurityError')) {
+      hint = 'Unsichere Umgebung. Nutze HTTPS oder localhost.';
+    } else {
+      hint = 'Allgemeiner Kamerafehler.';
+    }
+
+    setMsg(`Kamera konnte nicht gestartet werden (${context}).`, 'err');
+    setDiag(`
+      <div><strong>Fehler:</strong> ${escapeHtml(name.toString())}</div>
+      <ul class="hint">
+        <li>HTTPS verwenden (oder <code>localhost</code>).</li>
+        <li>Berechtigung für Kamera erteilen (Browser/Seiteneinstellungen).</li>
+        <li>Andere Kamera wählen und erneut versuchen.</li>
+        <li>Andere App schließen, die die Kamera nutzt.</li>
+        <li>Falls in einem <em>iframe</em>: <code>allow="camera"</code> setzen.</li>
+      </ul>
+    `);
+  }
+
+  function escapeHtml(s){ return s.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+
+  // 10) Events
+  startTest.onclick = startTestCamera;
+  stopTest.onclick = stopTestCamera;
+  startScan.onclick = startScanner;
+  stopScan.onclick = stopScanner;
+  cameraSelect.onchange = async () => {
+    if (testStream) await startTestCamera();
+    if (runningScan) await startScanner();
+  };
+
+  // 11) Initial
+  await refreshCameras();
+
 })();
 </script>
 </body>

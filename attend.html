@@ -16,7 +16,8 @@
     button[disabled]{ opacity:.6; cursor:not-allowed; }
     select { background:#000; color:#fff; border:1px solid var(--border); border-radius:10px; padding:8px; }
     .muted { color:var(--muted); } .ok{ color:var(--ok);} .warn{ color:var(--warn);} .err{ color:var(--err);}
-    pre { white-space:pre-wrap; font-size:12px; color:#ccc; background:#0c0c0c; padding:8px; border-radius:8px; border:1px solid #222; max-height:200px; overflow:auto; }
+    pre { white-space:pre-wrap; font-size:12px; color:#ccc; background:#0c0c0c; padding:8px; border-radius:8px; border:1px solid #222; max-height:220px; overflow:auto; }
+    .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
   </style>
 </head>
 <body>
@@ -24,7 +25,7 @@
   <h1>Ausbilder-Check-in</h1>
 
   <div class="card">
-    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+    <div class="row">
       <button id="startBtn">Scan starten</button>
       <button id="stopBtn" disabled>Stopp</button>
       <select id="cameraSelect" title="Kamera auswählen"></select>
@@ -32,7 +33,7 @@
     </div>
     <video id="video" autoplay playsinline muted></video>
     <div id="hint" class="muted" style="margin-top:8px;font-size:14px">
-      Hinweis: Erfordert <strong>HTTPS</strong> (oder <code>localhost</code>). Bei iOS erst nach Button-Klick möglich.
+      Erfordert <strong>HTTPS</strong> (oder <code>localhost</code>). Bei iOS erst nach Button-Klick möglich.
     </div>
     <details class="card" style="margin-top:12px;">
       <summary>Diagnose</summary>
@@ -49,21 +50,32 @@
 <!-- Firebase -->
 <script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-auth-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore-compat.js"></script>
 <script src="firebase-config.js"></script>
+<script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore-compat.js"></script>
 <script src="attendance-shared.js"></script>
 
-<!-- ZXing UMD -->
-<script src="https://unpkg.com/@zxing/browser@0.1.5/umd/index.min.js"></script>
+<!-- ZXing UMD (liefert window.ZXingBrowser) -->
+<script id="zxing-script" src="https://unpkg.com/@zxing/browser@0.1.5/umd/index.min.js"></script>
 
 <script>
 (async () => {
-  // ---------- Utils ----------
-  const L = document.getElementById('log');
-  const log = (...a)=>{ console.log(...a); L.textContent += a.map(x=> (typeof x==='string'?x:JSON.stringify(x))).join(' ') + '\n'; };
-  const setMsg = (t, cls='muted') => { msg.className=cls; msg.textContent=t; };
+  // ---------- Logging & Helpers ----------
+  const logEl = document.getElementById('log');
+  const diag  = document.getElementById('diag');
+  const msgEl = document.getElementById('msg');
+  const log = (...a)=>{
+    const line = a.map(x=>{
+      if (x instanceof Error) return `${x.name}: ${x.message}\n${x.stack||''}`;
+      if (typeof x==='object') { try { return JSON.stringify(x); } catch(_) { return String(x); } }
+      return String(x);
+    }).join(' ');
+    console.log(...a);
+    logEl.textContent += line + "\n";
+  };
+  const setMsg = (t, cls='muted') => { msgEl.className=cls; msgEl.textContent=t; };
+  const showDiag = (html) => { diag.innerHTML = html; };
 
-  // ---------- Auth / Firebase ----------
+  // ---------- Firebase ----------
   const { auth, db, parseQrPayload } = window._att || {};
   if (!auth || !db) { alert("Firebase nicht initialisiert."); location.href="index.html"; return; }
   await new Promise(res => auth.onAuthStateChanged(u => { if (!u) location.href='index.html'; else res(); }));
@@ -71,17 +83,15 @@
   // ---------- DOM ----------
   const video = document.getElementById("video");
   const startBtn = document.getElementById("startBtn");
-  const stopBtn = document.getElementById("stopBtn");
+  const stopBtn  = document.getElementById("stopBtn");
   const cameraSelect = document.getElementById("cameraSelect");
-  const msg = document.getElementById("msg");
-  const diag = document.getElementById("diag");
 
   // ---------- State ----------
   let running = false;
-  let stream = null;
-  let reader = null;
+  let reader  = null;
+  let previewStream = null;
 
-  // ---------- Secure Context & iframe Hinweise ----------
+  // ---------- Sicherheits-/Einbettungs-Checks ----------
   if (location.protocol !== "https:" && location.hostname !== "localhost"){
     setMsg("Kamera benötigt HTTPS oder localhost", "err");
     log("Nicht sicherer Kontext:", location.href);
@@ -89,14 +99,20 @@
   if (window !== window.top) {
     log("In iframe ausgeführt – iframe braucht allow=\"camera\"");
   }
-  if (!('mediaDevices' in navigator) || !('getUserMedia' in navigator.mediaDevices)){
-    setMsg("Browser unterstützt getUserMedia nicht.", "err");
-    log("mediaDevices/getUserMedia nicht verfügbar");
-  }
+
+  // ---------- Warte sicher, bis ZXing geladen ist ----------
+  await new Promise((resolve)=>{
+    if (typeof ZXingBrowser === 'object') return resolve();
+    const s = document.getElementById('zxing-script');
+    s.addEventListener('load', ()=> resolve());
+    s.addEventListener('error', ()=> { log('ZXing Script konnte nicht geladen werden'); resolve(); });
+  });
+  log("ZXingBrowser Typ:", typeof ZXingBrowser);
 
   // ---------- Kameraliste ----------
   async function listCameras(){
     try{
+      if (typeof ZXingBrowser !== 'object') throw new Error('ZXingBrowser fehlt');
       const devices = await ZXingBrowser.BrowserCodeReader.listVideoInputDevices();
       cameraSelect.innerHTML='';
       if (!devices.length){ cameraSelect.innerHTML='<option value="">Keine Kamera gefunden</option>'; return; }
@@ -106,7 +122,6 @@
         opt.textContent = d.label || `Kamera ${i+1}`;
         cameraSelect.appendChild(opt);
       });
-      // Back-Cam bevorzugen
       const back = [...devices].find(d => /back|rear|umwelt|rück/i.test(d.label));
       if (back) cameraSelect.value = back.deviceId;
       log("Gefundene Kameras:", devices.map(d=>({id:d.deviceId,label:d.label})));
@@ -116,84 +131,105 @@
     }
   }
 
-  // ---------- Kamera explizit starten (zeigt Permission-Prompt) ----------
-  async function startCameraPreview(){
+  // ---------- ZXing direkt die Kamera öffnen lassen (PRIO 1) ----------
+  async function startZXingDirect(){
     try{
-      await stopAll();
+      running = false;
+      try{ if (reader) await reader.reset(); }catch(_){}
+      if (previewStream){ previewStream.getTracks().forEach(t=>t.stop()); previewStream=null; }
+      video.srcObject = null;
+
+      if (typeof ZXingBrowser !== 'object') throw new Error('ZXingBrowser nicht geladen');
+
+      reader = new ZXingBrowser.BrowserMultiFormatReader();
+      const deviceId = cameraSelect.value || undefined;
+      running = true;
+      setMsg("Scanner aktiv – halte den QR ins Bild", "warn");
+
+      await reader.decodeFromVideoDevice(deviceId, video, async (result, err) => {
+        if (result && running) {
+          const txt = result.getText();
+          log("QR erkannt:", txt);
+          await onQrScanned(txt);
+          setMsg("QR erkannt! 🎉", "ok");
+          // running = false; await reader.reset(); // falls nach Treffer stoppen
+        }
+        if (err && !(err instanceof ZXingBrowser.NotFoundException)) {
+          log("ZXing Fehler:", (err && (err.name||err.message)) || err);
+        }
+      });
+
+      log("ZXing gestartet (decodeFromVideoDevice).");
+      return true;
+    }catch(e){
+      log("ZXing Startfehler (direct):", e);
+      setMsg("Scanner konnte nicht gestartet werden (direct)", "err");
+      return false;
+    }
+  }
+
+  // ---------- Fallback: Kamera selbst öffnen + decodeFromVideoElement (PRIO 2) ----------
+  async function startWithPreviewFallback(){
+    try{
+      running = false;
+      try{ if (reader) await reader.reset(); }catch(_){}
+      if (previewStream){ previewStream.getTracks().forEach(t=>t.stop()); previewStream=null; }
+      video.srcObject = null;
+
       const deviceId = cameraSelect.value || undefined;
       const constraints = {
         video: deviceId ? { deviceId: { exact: deviceId } } : { facingMode: { ideal: 'environment' } },
         audio: false
       };
       log("getUserMedia constraints:", constraints);
-      stream = await navigator.mediaDevices.getUserMedia(constraints);
-      video.srcObject = stream;
+      previewStream = await navigator.mediaDevices.getUserMedia(constraints);
+      video.srcObject = previewStream;
       setMsg("Kamera läuft (Vorschau)", "ok");
-      log("Stream gestartet:", stream.getVideoTracks().map(t=>t.label));
-      return true;
-    }catch(e){
-      log("getUserMedia Fehler:", e.name||e.message||e);
-      handleGUMError(e);
-      return false;
-    }
-  }
 
-  function handleGUMError(e){
-    const name = (e && (e.name || e.message || e.code)) || 'Unknown';
-    let hint = '';
-    if (/NotAllowed/i.test(name)) hint = "Zugriff verweigert: Kamera in Website-Einstellungen zulassen.";
-    else if (/NotFound|Overconstrained/i.test(name)) hint = "Keine passende Kamera gefunden. Andere Kamera wählen.";
-    else if (/NotReadable/i.test(name)) hint = "Kamera belegt. Andere App schließen.";
-    else if (/Security|NotSupported/i.test(name)) hint = "Unsichere Umgebung. HTTPS oder localhost verwenden.";
-    else hint = "Allgemeiner Kamerafehler.";
-    setMsg(`Kamera konnte nicht gestartet werden (${name}). ${hint}`, "err");
-    diag.innerHTML = `<div><strong>Fehler:</strong> ${name}</div><div>${hint}</div>`;
-  }
-
-  // ---------- ZXing an laufende Vorschau hängen ----------
-  async function startZXing(){
-    try{
+      if (typeof ZXingBrowser !== 'object') throw new Error('ZXingBrowser nicht geladen');
       reader = new ZXingBrowser.BrowserMultiFormatReader();
       running = true;
-      setMsg("Scanner aktiv – halte den QR ins Bild", "warn");
-      await reader.decodeFromVideoElement(video, async (result, err, controls) => {
+      setMsg("Scanner aktiv (Fallback) – halte den QR ins Bild", "warn");
+
+      await reader.decodeFromVideoElement(video, async (result, err) => {
         if (result && running){
           const txt = result.getText();
-          log("QR erkannt:", txt);
+          log("QR erkannt (fallback):", txt);
           await onQrScanned(txt);
           setMsg("QR erkannt! 🎉", "ok");
-          // optional: weiterlaufen lassen oder stoppen
-          // await stopAll();
+          // running = false; await reader.reset();
         }
-        if (err && !(err instanceof ZXingBrowser.NotFoundException)){
-          log("ZXing Fehler:", err);
+        if (err && !(err instanceof ZXingBrowser.NotFoundException)) {
+          log("ZXing Fehler (fallback):", (err && (err.name||err.message)) || err);
         }
       });
-      log("ZXing gestartet.");
+
+      log("ZXing gestartet (decodeFromVideoElement fallback).");
+      return true;
     }catch(e){
-      log("ZXing Startfehler:", e);
-      setMsg("Scanner konnte nicht gestartet werden.", "err");
+      log("Fallback Startfehler:", e);
+      setMsg("Scanner konnte nicht gestartet werden (fallback)", "err");
+      return false;
     }
   }
 
   async function stopAll(){
     running = false;
     try{ if (reader) { await reader.reset(); reader=null; } }catch(_){}
-    try{
-      if (stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
-      video.srcObject = null;
-    }catch(_){}
+    try{ if (previewStream){ previewStream.getTracks().forEach(t=>t.stop()); previewStream=null; } }catch(_){}
+    video.srcObject = null;
     startBtn.disabled = false;
-    stopBtn.disabled = true;
+    stopBtn.disabled  = true;
     setMsg("Bereit","muted");
   }
 
-  // ---------- QR-Handling ----------
+  // ---------- Firestore-Check-in ----------
   async function onQrScanned(text){
     try{
       const payload = parseQrPayload(text);
       if (!payload) { setMsg("Ungültiger QR-Code", "err"); return; }
       const { s: sessionId, n: nonce } = payload;
+
       const sref = db.collection("sessions").doc(sessionId);
       const snap = await sref.get();
       if (!snap.exists) { setMsg("Termin nicht gefunden", "err"); return; }
@@ -221,33 +257,40 @@
   startBtn.onclick = async () => {
     try{
       startBtn.disabled = true;
-      stopBtn.disabled = false;
-      // 1) Vorschau erzwingen (Permission-Dialog)
-      const ok = await startCameraPreview();
-      if (!ok) { startBtn.disabled=false; stopBtn.disabled=true; return; }
-      // 2) ZXing starten
-      await startZXing();
+      stopBtn.disabled  = false;
+
+      // 1) Primärweg: ZXing öffnet selbst
+      const ok1 = await startZXingDirect();
+      if (ok1) return;
+
+      // 2) Fallback: Vorschau + decodeFromVideoElement
+      const ok2 = await startWithPreviewFallback();
+      if (ok2) return;
+
+      // 3) Beide gescheitert
+      startBtn.disabled = false;
+      stopBtn.disabled  = true;
     }catch(e){
       log("startBtn Fehler:", e);
       setMsg("Start fehlgeschlagen.", "err");
       startBtn.disabled = false;
-      stopBtn.disabled = true;
+      stopBtn.disabled  = true;
     }
   };
 
   stopBtn.onclick = stopAll;
-
   cameraSelect.onchange = async () => {
-    if (stream || reader) {
-      // Bei laufender Session neu starten mit gewählter Kamera
-      await startCameraPreview();
-      if (running) await startZXing();
-    }
+    if (running) { await stopAll(); await startZXingDirect(); }
   };
 
   // ---------- Init ----------
-  await listCameras();
-
+  await (async ()=>{
+    if (location.protocol !== "https:" && location.hostname !== "localhost"){
+      showDiag('<div class="err">Nicht sicherer Kontext (HTTPS/localhost nötig)</div>');
+    }
+    // Kameras einmal listen
+    await listCameras();
+  })();
 })();
 </script>
 </body>

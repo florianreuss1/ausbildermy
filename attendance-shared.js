@@ -1,51 +1,45 @@
 // attendance-shared.js
-(function(global){
-  // --- Firebase Setup ---
-  const firebaseConfig = global.firebaseConfig; // kommt aus firebase-config.js
-  if (!firebase.apps.length) {
-    firebase.initializeApp(firebaseConfig);
-  }
+(function(){
+  if (!firebase.apps.length) firebase.initializeApp(window.firebaseConfig);
 
   const auth = firebase.auth();
-  const db = firebase.firestore();
+  const db   = firebase.firestore();
 
-  // --- QR Utils ---
-  function newNonce(){
-    return Math.random().toString(36).substring(2, 10);
-  }
-
-  function buildQrPayload(sessionId, nonce){
-    // kompaktes JSON, Version 1
-    return JSON.stringify({ v: 1, s: sessionId, n: nonce });
-  }
-
-  function parseQrPayload(text){
-    try {
-      const o = JSON.parse(text);
-      if (o && o.v === 1 && typeof o.s === 'string' && typeof o.n === 'string') {
-        return { s: o.s, n: o.n };
-      }
-    } catch(e) {}
-    return null;
-  }
-
-  // --- Role helper (falls Rollen-Logik in Firestore) ---
   async function getUserRole(){
     const u = auth.currentUser;
-    if (!u) return null;
+    if (!u) return '';
     try {
-      const doc = await db.collection('users').doc(u.uid).get();
-      return doc.exists ? doc.data().role : null;
-    } catch(e){
-      console.error('getUserRole Fehler:', e);
-      return null;
+      const snap = await db.collection('rollen').doc(u.uid).get();
+      if (!snap.exists) return '';
+      const roleRaw = (snap.data().role || '').toString().trim().toLowerCase();
+      if (['administrator','admins','adminstrator','admin'].includes(roleRaw)) return 'admin';
+      if (['trainer/in','trainerin','coach','trainer'].includes(roleRaw)) return 'trainer';
+      if (['si-fu','sifu','si fu','si‐fu','si‒fu'].includes(roleRaw)) return 'si-fu';
+      return roleRaw;
+    } catch (e) {
+      console.warn('getUserRole() failed:', e);
+      return '';
     }
   }
 
-  // global export
-  global._att = {
-    auth, db,
-    newNonce, buildQrPayload, parseQrPayload,
-    getUserRole
-  };
-})(window);
+  function newNonce(){
+    const a = new Uint8Array(16); crypto.getRandomValues(a);
+    return Array.from(a).map(x=>x.toString(16).padStart(2,'0')).join('');
+  }
+
+  function buildQrPayload(sessionId, nonce){
+    return JSON.stringify({ t:'WT', v:1, s:sessionId, n:nonce });
+  }
+
+  function parseQrPayload(txt){
+    try { const o = JSON.parse(txt); if (o && o.t==='WT' && o.v===1 && o.s && o.n) return o; } catch(e){}
+    return null;
+  }
+
+  async function assertAdminOrSiFu(){
+    const r = await getUserRole();
+    if (!['admin','si-fu'].includes(r)) throw new Error('Nur für Admin/Si-Fu.');
+  }
+
+  window._att = { auth, db, getUserRole, newNonce, buildQrPayload, parseQrPayload, assertAdminOrSiFu };
+})();

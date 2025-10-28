@@ -46,15 +46,45 @@
   </div>
 </div>
 
-<!-- Firebase (Compat SDK wie in deinem Projekt) -->
+<!-- Firebase (deine vorhandenen Dateien stellen window._att = {auth, db, parseQrPayload} bereit) -->
 <script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore-compat.js"></script>
 <script src="firebase-config.js"></script>
 <script src="attendance-shared.js"></script>
 
-<!-- ZXing UMD -->
-<script src="https://unpkg.com/@zxing/browser@0.1.5/umd/index.min.js"></script>
+<!-- ZXing dynamisch mit Fallback laden (unpkg -> jsDelivr) -->
+<script>
+  async function ensureZXingLoaded() {
+    if (window.ZXingBrowser) return;
+
+    function load(src) {
+      return new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = src;
+        s.async = true;
+        s.onload = () => resolve();
+        s.onerror = () => reject(new Error('Script load error: ' + src));
+        document.head.appendChild(s);
+      });
+    }
+
+    try {
+      await load('https://unpkg.com/@zxing/browser@0.1.5/umd/index.min.js');
+    } catch (e1) {
+      try {
+        await load('https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.5/umd/index.min.js');
+      } catch (e2) {
+        const msg = 'ZXing konnte nicht geladen werden.\n' + e1.message + '\n' + e2.message;
+        console.error(msg);
+        throw new Error(msg);
+      }
+    }
+    if (!window.ZXingBrowser) {
+      throw new Error('ZXing UMD geladen, aber window.ZXingBrowser ist undefined (CSP/Blocker?)');
+    }
+  }
+</script>
 
 <script>
 (async () => {
@@ -74,7 +104,6 @@
   const { auth, db, parseQrPayload } = window._att || {};
   if (!auth || !db) { alert("Firebase nicht initialisiert."); location.href="index.html"; return; }
 
-  // Warte bis angemeldet; sonst zurück
   await new Promise(res => auth.onAuthStateChanged(u => { if (!u) location.href='index.html'; else res(); }));
 
   // ---------- DOM ----------
@@ -91,7 +120,7 @@
   let lastTxt = null;       // Debounce-Inhalt
   let lastAt = 0;           // Debounce-Zeit
 
-  // ---------- Sicherheits-/Kompatibilitäts-Hinweise ----------
+  // ---------- Hinweise Umgebung ----------
   if (location.protocol !== "https:" && location.hostname !== "localhost"){
     setMsg("Kamera benötigt HTTPS oder localhost", "err");
     log("Nicht sicherer Kontext:", location.href);
@@ -104,7 +133,7 @@
     log("mediaDevices/getUserMedia nicht verfügbar");
   }
 
-  // ---------- Permission einmalig antriggern (Labels sichtbar machen) ----------
+  // ---------- Permission einmalig (Labels sichtbar machen) ----------
   async function ensurePermissionOnce() {
     try {
       const tmp = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
@@ -118,7 +147,7 @@
   // ---------- Kamera-Liste ----------
   async function listCameras(){
     try{
-      if (!window.ZXingBrowser) { throw new Error('ZXing UMD nicht geladen'); }
+      if (!window.ZXingBrowser) throw new Error('ZXing UMD nicht geladen');
       const devices = await ZXingBrowser.BrowserCodeReader.listVideoInputDevices();
       cameraSelect.innerHTML='';
       if (!devices.length){
@@ -235,8 +264,7 @@
       }, { merge: true });
 
       setMsg("Erfolgreich eingecheckt 🎉","ok");
-
-      // Optional: nach Erfolg stoppen, um Mehrfach-Scans zu vermeiden
+      // Optional: nach Erfolg stoppen
       // setTimeout(stopScan, 800);
     }catch(e){
       log("Check-in Fehler:", e);
@@ -258,7 +286,16 @@
   window.addEventListener('beforeunload', stopScan);
 
   // ---------- Init ----------
-  await ensurePermissionOnce(); // macht Labels sichtbar, wenn der User erlaubt
+  try {
+    await ensureZXingLoaded();
+    log('[Diag] ZXingBrowser?', typeof window.ZXingBrowser, window.ZXingBrowser ? 'ok' : 'MISSING');
+  } catch (e) {
+    log('ZXing Ladevorgang fehlgeschlagen:', e && (e.message || e));
+    setMsg('ZXing konnte nicht geladen werden. Prüfe Internet/CSP/CDN.', 'err');
+    return; // ohne ZXing abbrechen
+  }
+
+  await ensurePermissionOnce();
   await listCameras();
 
 })();

@@ -46,43 +46,37 @@
   </div>
 </div>
 
-<!-- Firebase (deine vorhandenen Dateien stellen window._att = {auth, db, parseQrPayload} bereit) -->
+<!-- Firebase -->
 <script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore-compat.js"></script>
 <script src="firebase-config.js"></script>
 <script src="attendance-shared.js"></script>
 
-<!-- ZXing dynamisch mit Fallback laden (unpkg -> jsDelivr) -->
+<!-- ZXing dynamisch laden: lokal -> unpkg -> jsDelivr -->
 <script>
   async function ensureZXingLoaded() {
     if (window.ZXingBrowser) return;
-
     function load(src) {
       return new Promise((resolve, reject) => {
         const s = document.createElement('script');
-        s.src = src;
-        s.async = true;
-        s.onload = () => resolve();
+        s.src = src; s.async = true;
+        s.onload = resolve;
         s.onerror = () => reject(new Error('Script load error: ' + src));
         document.head.appendChild(s);
       });
     }
-
-    try {
-      await load('https://unpkg.com/@zxing/browser@0.1.5/umd/index.min.js');
-    } catch (e1) {
-      try {
-        await load('https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.5/umd/index.min.js');
-      } catch (e2) {
-        const msg = 'ZXing konnte nicht geladen werden.\n' + e1.message + '\n' + e2.message;
-        console.error(msg);
-        throw new Error(msg);
-      }
+    const candidates = [
+      './vendor/zxing/zxing-browser.min.js',
+      'https://unpkg.com/@zxing/browser@0.1.5/umd/zxing-browser.min.js',
+      'https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.5/umd/zxing-browser.min.js'
+    ];
+    let lastErr = null;
+    for (const src of candidates) {
+      try { await load(src); if (window.ZXingBrowser) return; }
+      catch (e) { lastErr = e; console.warn('ZXing Load Error', src, e.message); }
     }
-    if (!window.ZXingBrowser) {
-      throw new Error('ZXing UMD geladen, aber window.ZXingBrowser ist undefined (CSP/Blocker?)');
-    }
+    throw lastErr || new Error('ZXing konnte nicht geladen werden.');
   }
 </script>
 
@@ -90,11 +84,10 @@
 (async () => {
   // ---------- Utils ----------
   const L = document.getElementById('log');
-  const log = (...a)=>{ try{ console.log(...a); }catch(_){} L.textContent += a.map(x=> (typeof x==='string'?x:JSON.stringify(x))).join(' ') + '\n'; };
+  const log = (...a)=>{ console.log(...a); L.textContent += a.map(x=> (typeof x==='string'?x:JSON.stringify(x))).join(' ') + '\n'; };
   const msgEl = document.getElementById("msg");
   const setMsg = (t, cls='muted') => { msgEl.className=cls; msgEl.textContent=t; };
 
-  // Frühe Diagnose
   window.addEventListener('error', ev => { log('[window.onerror]', ev.error || ev.message || ev); });
   log('[Diag] href=', location.href);
   log('[Diag] secureContext=', (location.protocol === 'https:' || location.hostname === 'localhost'));
@@ -103,7 +96,6 @@
   // ---------- Auth / Firebase ----------
   const { auth, db, parseQrPayload } = window._att || {};
   if (!auth || !db) { alert("Firebase nicht initialisiert."); location.href="index.html"; return; }
-
   await new Promise(res => auth.onAuthStateChanged(u => { if (!u) location.href='index.html'; else res(); }));
 
   // ---------- DOM ----------
@@ -114,13 +106,9 @@
   const diag = document.getElementById("diag");
 
   // ---------- State ----------
-  let reader = null;        // ZXing Reader
-  let controls = null;      // ZXing Controls (stop())
-  let running = false;      // Flag
-  let lastTxt = null;       // Debounce-Inhalt
-  let lastAt = 0;           // Debounce-Zeit
+  let reader=null, controls=null, running=false, lastTxt=null, lastAt=0;
 
-  // ---------- Hinweise Umgebung ----------
+  // ---------- Hinweise ----------
   if (location.protocol !== "https:" && location.hostname !== "localhost"){
     setMsg("Kamera benötigt HTTPS oder localhost", "err");
     log("Nicht sicherer Kontext:", location.href);
@@ -133,7 +121,6 @@
     log("mediaDevices/getUserMedia nicht verfügbar");
   }
 
-  // ---------- Permission einmalig (Labels sichtbar machen) ----------
   async function ensurePermissionOnce() {
     try {
       const tmp = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
@@ -144,10 +131,8 @@
     }
   }
 
-  // ---------- Kamera-Liste ----------
   async function listCameras(){
     try{
-      if (!window.ZXingBrowser) throw new Error('ZXing UMD nicht geladen');
       const devices = await ZXingBrowser.BrowserCodeReader.listVideoInputDevices();
       cameraSelect.innerHTML='';
       if (!devices.length){
@@ -160,8 +145,7 @@
         opt.textContent = d.label || `Kamera ${i+1}`;
         cameraSelect.appendChild(opt);
       });
-      // Back-Cam bevorzugen
-      const back = [...devices].find(d => /back|rear|umwelt|rück/i.test(d.label));
+      const back = [...devices].find(d => /back|rear|rück/i.test(d.label));
       if (back) cameraSelect.value = back.deviceId;
       log("Gefundene Kameras:", devices.map(d=>({id:d.deviceId,label:d.label})));
     }catch(e){
@@ -170,29 +154,22 @@
     }
   }
 
-  // ---------- Start/Stop ----------
   async function startScan(){
     try{
-      await stopScan(); // sauber neu
-      if (!window.ZXingBrowser) throw new Error('ZXing UMD nicht geladen (window.ZXingBrowser ist undefined)');
-
+      await stopScan();
       reader = new ZXingBrowser.BrowserMultiFormatReader();
-      const deviceId = cameraSelect.value || undefined; // undefined -> Standard/Back-Cam
-
+      const deviceId = cameraSelect.value || undefined;
       running = true;
       setMsg("Scanner aktiv – halte den QR ins Bild", "warn");
 
       controls = await reader.decodeFromVideoDevice(deviceId, video, async (result, err, ctrls) => {
         if (!running) return;
-
-        // Controls-Referenz beim ersten Callback merken
         if (!controls && ctrls) controls = ctrls;
 
         if (result){
           const txt = result.getText();
           const now = Date.now();
-          // Debounce: gleicher Inhalt innerhalb 2s ignorieren
-          if (txt === lastTxt && (now - lastAt) < 2000) return;
+          if (txt === lastTxt && (now - lastAt) < 2000) return; // Debounce
           lastTxt = txt; lastAt = now;
 
           log("QR erkannt:", txt);
@@ -219,8 +196,7 @@
     running = false;
     try{ controls && controls.stop && controls.stop(); }catch(_){}
     try{ reader && reader.reset && await reader.reset(); }catch(_){}
-    controls = null;
-    reader = null;
+    controls = null; reader = null;
     try { video.srcObject = null; } catch(_){}
     startBtn.disabled = false;
     stopBtn.disabled = true;
@@ -239,7 +215,6 @@
     diag.innerHTML = `<div><strong>Fehler:</strong> ${name}</div><div>${hint}</div>`;
   }
 
-  // ---------- QR-Handling / Firestore ----------
   async function onQrScanned(text){
     try{
       const payload = parseQrPayload && parseQrPayload(text);
@@ -264,7 +239,7 @@
       }, { merge: true });
 
       setMsg("Erfolgreich eingecheckt 🎉","ok");
-      // Optional: nach Erfolg stoppen
+      // Optional: nach Erfolg stoppen:
       // setTimeout(stopScan, 800);
     }catch(e){
       log("Check-in Fehler:", e);
@@ -272,15 +247,10 @@
     }
   }
 
-  // ---------- Events ----------
   startBtn.onclick = startScan;
   stopBtn.onclick = stopScan;
+  cameraSelect.onchange = async () => { if (running) await startScan(); };
 
-  cameraSelect.onchange = async () => {
-    if (running) await startScan(); // neu mit gewählter Kamera starten
-  };
-
-  // Tab/Seitenwechsel: Stream sauber schließen
   document.addEventListener('visibilitychange', () => { if (document.hidden) stopScan(); });
   window.addEventListener('pagehide', stopScan);
   window.addEventListener('beforeunload', stopScan);
@@ -291,10 +261,9 @@
     log('[Diag] ZXingBrowser?', typeof window.ZXingBrowser, window.ZXingBrowser ? 'ok' : 'MISSING');
   } catch (e) {
     log('ZXing Ladevorgang fehlgeschlagen:', e && (e.message || e));
-    setMsg('ZXing konnte nicht geladen werden. Prüfe Internet/CSP/CDN.', 'err');
-    return; // ohne ZXing abbrechen
+    setMsg('ZXing konnte nicht geladen werden. Prüfe lokale Datei/CDN.', 'err');
+    return;
   }
-
   await ensurePermissionOnce();
   await listCameras();
 

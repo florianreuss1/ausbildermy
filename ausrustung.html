@@ -44,6 +44,13 @@
     }
     .card button:hover { transform:scale(1.05); }
 
+    .note {
+      margin-top:10px; /* Eine Zeile Abstand */
+      font-size:14px;
+      color:#ffcc00;
+      text-align:center;
+    }
+
     /* Mobile: Spalten reduzieren */
     @media (max-width:1000px){
       .content { grid-template-columns: repeat(2, 1fr); }
@@ -63,6 +70,12 @@
     <div class="card">
       <img src="Faustschutzer.jpg" alt="Faustschützer">
       <button onclick="window.open('https://www.amazon.de/dp/B08NDW84F4','_blank')">Faustschützer</button>
+    </div>
+
+    <div class="card">
+      <img src="ewtof.png" alt="EWTO-Faustschützer">
+      <button onclick="window.open('https://ewto-shop.de/Faustschutz-Spezial','_blank')">Faustschützer</button>
+      <div class="note">Bei Jasmin bestellen, um Versandkosten zu sparen!</div>
     </div>
 
     <div class="card">

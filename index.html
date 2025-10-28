@@ -13,14 +13,12 @@
       min-height:100vh; display:flex; flex-direction:column;
     }
 
-    /* Header mit 3 Logos */
     .header {
       display:flex; justify-content:space-between; align-items:center;
       padding:10px 12px; gap:10px;
     }
     .header img { height:80px; width:auto; object-fit:contain; }
 
-    /* Info-Box: Nutzung.html */
     .info-wrap { width:100%; display:flex; justify-content:center; padding:10px 12px; }
     .info-card {
       width:100%; max-width:800px; background:#fff; color:#111;
@@ -29,7 +27,6 @@
     }
     .info-card iframe { width:100%; border:0; display:block; background:#fff; }
 
-    /* Login-Inhalt */
     .wrap {
       flex:1; display:flex; flex-direction:column; align-items:center; gap:14px;
       padding:12px;
@@ -54,6 +51,14 @@
       box-shadow:0 2px 6px rgba(0,0,0,.35); margin-top:6px;
     }
     .login-btn[disabled]{ opacity:.6; cursor:default; }
+
+    /* Neuer Button */
+    .forgot-btn {
+      background:none; border:none; color:#8cf; cursor:pointer;
+      text-decoration:underline; font-size:14px; margin-top:4px;
+    }
+    .forgot-btn:hover { color:#adf; }
+
     .msg {
       width:100%; max-width:560px; min-height:40px;
       background:#fff; color:#111; border-radius:6px;
@@ -72,9 +77,9 @@
 
   <!-- Header -->
   <div class="header">
-    <img id="logo-left" src="pluslogo.png" alt="Logo links">
+    <img id="logo-left" src="pluslogo.jpg" alt="Logo links">
     <img id="logo-center" src="faust.jpg" alt="Logo Mitte">
-    <img id="logo-right" src="pluslogo.png" alt="Logo rechts">
+    <img id="logo-right" src="Ewto.jpg" alt="Logo rechts">
   </div>
 
   <!-- Nutzung.html oben einblenden -->
@@ -97,42 +102,48 @@
     </div>
 
     <button class="login-btn" id="loginBtn">Login</button>
+
+    <!-- 🆕 Passwort vergessen -->
+    <button class="forgot-btn" id="forgotBtn">Passwort vergessen?</button>
+
     <div id="msg" class="msg empty"> </div>
   </div>
 
-  <!-- Firebase SDKs (compat) -->
+  <!-- Firebase SDKs -->
   <script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore-compat.js"></script>
 
+  <!-- Zentrale Firebase-Config (statt hardcodierter initializeApp-Config) -->
+  <script src="firebase-config.js"></script>
+
   <script>
-    // ---------- Firebase Init ----------
-    firebase.initializeApp({
-       apiKey: "AIzaSyCve4c8a1nzU8SJcDhF4rqRzu30JaJ2rq8",
-    authDomain: "login-wt-my.firebaseapp.com",
-    projectId: "login-wt-my",
-    storageBucket: "login-wt-my.firebasestorage.app",
-    messagingSenderId: "666746071009",
-    appId: "1:666746071009:web:78cb64549d4309bc67d4a0"
-    });
+    // ---------- Firebase Init (zentral) ----------
+    firebase.initializeApp(window.firebaseConfig);
     const auth = firebase.auth();
     const db   = firebase.firestore();
 
-    // Login nur für diese Sitzung
     auth.setPersistence(firebase.auth.Auth.Persistence.SESSION);
 
-    // ---------- Auto-Weiterleitung, wenn schon angemeldet ----------
+    // ---------- Auto-Weiterleitung ----------
     auth.onAuthStateChanged((user) => {
       if (user) {
-        // Rolle holen, falls noch nicht gesetzt
-        if (!sessionStorage.getItem("role")) {
+        if (!sessionStorage.getItem("role") || !sessionStorage.getItem("school")) {
           db.collection("rollen").doc(user.uid).get().then((snap)=>{
-            const role = (snap.exists ? (snap.data().role||"user") : "user").toLowerCase();
+            let role = "user";
+            let school = "";
+            if (snap.exists) {
+              const data = snap.data();
+              role   = (data.role || "user").toLowerCase();
+              school = data.school || "";
+            }
             sessionStorage.setItem("role", role);
+            sessionStorage.setItem("school", school);
             sessionStorage.setItem("loggedInUser", user.email || "");
             location.href = "hauptseite.html";
           }).catch(()=>{
             sessionStorage.setItem("role","user");
+            sessionStorage.setItem("school","");
             sessionStorage.setItem("loggedInUser", user.email || "");
             location.href = "hauptseite.html";
           });
@@ -182,17 +193,21 @@
       btn.disabled = true; msg("Anmeldung …");
 
       try {
-        // 1) Auth bei Firebase
         const cred = await auth.signInWithEmailAndPassword(email, pass);
         const uid  = cred.user.uid;
 
-        // 2) Rolle aus Firestore
         const snap = await db.collection("rollen").doc(uid).get();
-        const role = (snap.exists ? (snap.data().role||"user") : "user").toLowerCase();
+        let role = "user";
+        let school = "";
+        if (snap.exists) {
+          const data = snap.data();
+          role   = (data.role || "user").toLowerCase();
+          school = data.school || "";
+        }
 
-        // 3) Session speichern
         sessionStorage.setItem("loggedInUser", email);
         sessionStorage.setItem("role", role);
+        sessionStorage.setItem("school", school);
 
         msg("Erfolgreich angemeldet.", true);
         setTimeout(()=> location.href = "hauptseite.html", 300);
@@ -203,11 +218,32 @@
         if (err.code === "auth/invalid-email") human = "E-Mail-Adresse ist ungültig.";
         else if (err.code === "auth/user-disabled") human = "Konto ist deaktiviert.";
         else if (err.code === "auth/user-not-found" || err.code === "auth/wrong-password") human = "E-Mail oder Passwort falsch.";
+        else if (err.code === "auth/too-many-requests") human = "Zu viele Versuche. Bitte kurz warten.";
+        else if (err.code === "auth/network-request-failed") human = "Netzwerkfehler. Bitte Verbindung prüfen.";
         msg(human);
       } finally {
         btn.disabled = false;
       }
     }
+
+    // ---------- Passwort-vergessen ----------
+    $("#forgotBtn").addEventListener("click", async () => {
+      const email = $("#user").value.trim();
+      if (!email) { msg("Bitte zuerst Ihre E-Mail-Adresse eingeben."); return; }
+
+      msg("Sende E-Mail zum Zurücksetzen …");
+      try {
+        await auth.sendPasswordResetEmail(email);
+        msg("E-Mail zum Zurücksetzen wurde gesendet.", true);
+      } catch (err) {
+        console.error("[Passwort zurücksetzen Fehler]", err);
+        let human = "Fehler beim Senden der E-Mail.";
+        if (err.code === "auth/invalid-email") human = "E-Mail-Adresse ist ungültig.";
+        else if (err.code === "auth/user-not-found") human = "Kein Konto mit dieser E-Mail gefunden.";
+        else if (err.code === "auth/network-request-failed") human = "Netzwerkfehler. Bitte Verbindung prüfen.";
+        msg(human);
+      }
+    });
   </script>
 </body>
 </html>

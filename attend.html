@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Ausbilder-Check-in</title>
+  <style>
+    body{margin:0;background:#000;color:#fff;font-family:Arial,Helvetica,sans-serif;}
+    .wrap{max-width:700px;margin:0 auto;padding:16px;}
+    .card{background:#111;border:1px solid #333;border-radius:12px;padding:16px;margin:12px 0;}
+    #preview{width:100%;aspect-ratio:3/4;background:#000;border-radius:12px;border:1px solid #333}
+    button{background:#fff;color:#000;border:none;border-radius:10px;padding:10px 14px;font-weight:bold;cursor:pointer}
+    .ok{color:#6ee7a8}.warn{color:#facc15}.err{color:#f87171}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Ausbilder-Check-in</h1>
+  <div class="card">
+    <video id="preview" muted playsinline></video>
+    <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button id="startBtn">Kamera starten</button>
+      <button id="stopBtn">Stop</button>
+      <span id="msg"></span>
+    </div>
+  </div>
+  <div class="card">
+    <button onclick="location.href='index.html'">Zurück</button>
+  </div>
+</div>
+
+<!-- Firebase -->
+<script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore-compat.js"></script>
+<script src="firebase-config.js"></script>
+<script src="attendance-shared.js"></script>
+
+<!-- ZXing Scanner -->
+<script src="https://unpkg.com/@zxing/browser@0.1.5/umd/index.min.js"></script>
+
+<script>
+(async function(){
+  const {auth,db,parseQrPayload} = window._att;
+  await new Promise(r=>auth.onAuthStateChanged(u=>{ if(!u) location.replace('index.html'); else r(); }));
+
+  const codeReader = new ZXingBrowser.BrowserMultiFormatReader();
+  const video = document.getElementById('preview');
+  const msg = document.getElementById('msg');
+  const startBtn = document.getElementById('startBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  let running = false;
+  let lastScanText = '';
+
+  function setMessage(text, cls){ msg.className=cls||''; msg.textContent=text; }
+
+  async function start(){
+    try{
+      const devices = await ZXingBrowser.BrowserCodeReader.listVideoInputDevices();
+      const backCam = devices.find(d=>/back|rück|environment/i.test(d.label))?.deviceId || devices[0]?.deviceId;
+      if(!backCam){ setMessage('Keine Kamera gefunden.', 'err'); return; }
+      running = true;
+      await codeReader.decodeFromVideoDevice(backCam, video, async (result, err, controls)=>{
+        if (result && running) {
+          const txt = result.getText();
+          if (txt === lastScanText) return; // entprellen
+          lastScanText = txt;
+
+          const payload = parseQrPayload(txt);
+          if(!payload){ setMessage('Ungültiger QR-Code.', 'err'); return; }
+          try{
+            await handleCheckin(payload);
+          }catch(e){
+            console.error(e);
+            setMessage(e.message || 'Check-in fehlgeschlagen', 'err');
+          }
+        }
+      });
+      setMessage('Scanner aktiv – bitte QR halten…','warn');
+    }catch(e){
+      console.error(e); setMessage('Kamera konnte nicht gestartet werden.', 'err');
+    }
+  }
+
+  async function stop(){
+    running = false;
+    try{ await codeReader.reset(); }catch(e){}
+    setMessage('Scanner gestoppt.');
+  }
+
+  startBtn.onclick = start; stopBtn.onclick = stop;
+
+  async function handleCheckin(payload){
+    const {s:sessionId, n:nonce} = payload;
+
+    const sref = db.collection('sessions').doc(sessionId);
+    const snap = await sref.get();
+    if(!snap.exists) throw new Error('Termin nicht gefunden.');
+    const s = snap.data();
+    if (!s.open) throw new Error('Check-in ist geschlossen.');
+    if (s.qrNonce !== nonce) throw new Error('QR ist veraltet.');
+
+    const u = auth.currentUser;
+    const cref = sref.collection('checkins').doc(u.uid);
+
+    await cref.set({
+      uid: u.uid,
+      email: u.email || '',
+      displayName: u.displayName || '',
+      checkedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      userAgent: navigator.userAgent,
+      nonce: nonce                // wichtig: passt zur Rule mit Nonce
+    }, { merge: false });
+
+    setMessage('Erfolgreich eingecheckt!','ok');
+  }
+})();
+</script>
+</body>
+</html>
